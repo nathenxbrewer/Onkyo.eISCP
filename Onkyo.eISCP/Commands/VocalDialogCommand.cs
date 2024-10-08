@@ -13,8 +13,7 @@ namespace Onkyo.eISCP.Commands
             Level2 = 0x02,
             Level3 = 0x03,
             Level4 = 0x04,
-            Level5 = 0x05,
-            Query = 0x51 // Assuming 'QSTN' is represented by 0x51
+            Level5 = 0x05
         }
 
         public class VocalDialogCommand : ISCPMessage
