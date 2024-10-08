@@ -14,8 +14,6 @@ namespace Onkyo.eISCP.Commands
             Level3 = 0x03,
             Level4 = 0x04,
             Level5 = 0x05,
-            Up = 0x55, // Assuming 'UP' is represented by 0x55
-            Down = 0x56, // Assuming 'DOWN' is represented by 0x56
             Query = 0x51 // Assuming 'QSTN' is represented by 0x51
         }
 
