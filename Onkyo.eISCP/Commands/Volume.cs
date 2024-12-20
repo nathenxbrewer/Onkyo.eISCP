@@ -1,10 +1,12 @@
 ﻿using System.ComponentModel;
 using System.Threading.Tasks;
+using static Onkyo.eISCP.Enums;
 
 namespace Onkyo.eISCP.Commands
 {
     public class Volume : ISCPMessage
     {
+        private readonly Zone _zone;
         private short _volumeLevel;
 
         public Volume() : this(Zone.Main)
@@ -12,6 +14,7 @@ namespace Onkyo.eISCP.Commands
 
         public Volume(Zone zone = Zone.Main) : base(zone == Zone.Zone2 ? "ZVL" : "MVL")
         {
+            _zone = zone;
         }
 
         public short VolumeLevel

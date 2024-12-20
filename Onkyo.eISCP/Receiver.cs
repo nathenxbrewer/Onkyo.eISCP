@@ -5,6 +5,7 @@ using System.Collections.ObjectModel;
 using System.Text;
 using System.Threading.Tasks;
 using System.Linq;
+using static Onkyo.eISCP.Enums.Zone;
 
 namespace Onkyo.eISCP
 {
@@ -29,13 +30,13 @@ namespace Onkyo.eISCP
  
         public Receiver()
         {
-            MainPower = new Power(Zone.Main);
-            Zone2Power = new Power(Zone.Zone2);
+            MainPower = new Power(Main);
+            Zone2Power = new Power(Zone2);
             MasterVolume = new Volume();
             Zone2Volume = new Volume();
             NetListTitle = new NetListTitleInfo();
-            MainInput = new Input(Zone.Main);
-            Zone2Input = new Input(Zone.Zone2);
+            MainInput = new Input(Main);
+            Zone2Input = new Input(Zone2);
 
             NetListCursorInfo = new NetListInfo();
             NetListItems = new ObservableCollection<NetListInfo>();
@@ -116,13 +117,13 @@ namespace Onkyo.eISCP
         {
             // todo query commands.....
             // response will processed on event
-            await this.GetPowerStatusAsync(Zone.Main);
-            await this.GetVolumeAsync(Zone.Main);
-            await this.GetInputAsync(Zone.Main);
+            await this.GetPowerStatusAsync(Main);
+            await this.GetVolumeAsync(Main);
+            await this.GetInputAsync(Main);
 
-            await this.GetPowerStatusAsync(Zone.Zone2);
-            await this.GetVolumeAsync(Zone.Zone2);
-            await this.GetInputAsync(Zone.Zone2);
+            await this.GetPowerStatusAsync(Zone2);
+            await this.GetVolumeAsync(Zone2);
+            await this.GetInputAsync(Zone2);
 
             await this.GetNetListTitleInfoAsync();
         }
@@ -131,7 +132,7 @@ namespace Onkyo.eISCP
         {
             if (!Connected)
                 return false;
-            var power = await SendCommandAsync<Power>(new PowerStatus(Zone.Main));
+            var power = await SendCommandAsync<Power>(new PowerStatus(Main));
             return power != null;
         }
     }

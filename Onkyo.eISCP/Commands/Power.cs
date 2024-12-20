@@ -2,14 +2,11 @@
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
+using static Onkyo.eISCP.Enums;
 
 namespace Onkyo.eISCP.Commands
 {
-    public enum Zone
-    {
-        Main,
-        Zone2
-    }
+
 
     public class Power : ISCPMessage
     {

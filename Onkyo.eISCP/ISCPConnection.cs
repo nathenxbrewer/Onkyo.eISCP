@@ -18,8 +18,13 @@ namespace Onkyo.eISCP
         private Thread _listenerThread;
         private ManualResetEventSlim _messageProcessingResetEvent;
         private CancellationTokenSource _listenerCancellationToken;
+        
+        private string _ipAddress;
+        private int _port;
 
         public bool Connected => _client != null && _client.Connected;
+
+        public bool KeepAlive { get; set; }
 
         public void Connect(IPAddress address, int port = 60128)
         {
@@ -33,6 +38,10 @@ namespace Onkyo.eISCP
 
         public void Connect(IPEndPoint endPoint)
         {
+            //store values to reconnect later
+            _ipAddress = endPoint.Address.ToString();
+            _port = endPoint.Port;
+            
             _client = new TcpClient();
             _client.Connect(endPoint);
             _networkStream = _client.GetStream();
@@ -44,7 +53,17 @@ namespace Onkyo.eISCP
 
             _messageProcessingResetEvent = new ManualResetEventSlim(true);
 
+            SetKeepAlive(_client);
             OnConnected();
+        }
+        
+        static void SetKeepAlive(TcpClient tcpClient)
+        {
+            // Access the underlying socket
+            Socket socket = tcpClient.Client;
+
+            // Enable TCP Keep-Alive
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
         }
 
         public async Task ConnectAsync(string ipaddress, int port = 60128)
@@ -66,6 +85,20 @@ namespace Onkyo.eISCP
         {
             await ConnectAsync(receiverInfo.IPAddress, receiverInfo.Port);
         }
+        
+        public async Task<ReceiverInfo> FindAndConnectAsync(string ip, int millisecondsDiscoverTimeout = 5000)
+        {
+            var receivers = await DiscoverAsync(millisecondsDiscoverTimeout);
+            var receiver = receivers.FirstOrDefault(x=>x.IPAddress.ToString() == ip);
+
+            if (receiver == null)
+            {
+                throw new InvalidOperationException("No Receivier found.");
+            }
+
+            await ConnectAsync(receiver);
+            return receiver;
+        }
 
         public void Connect(ReceiverInfo receiverInfo)
         {
@@ -77,70 +110,116 @@ namespace Onkyo.eISCP
         private void MessageReceiveListener(object obj)
         {
             var readBuf = new byte[2048];
+            var messageBuf = new List<byte>();
 
-            int startIndex = 0;
-
-            while (_listenerCancellationToken.IsCancellationRequested == false)
+            while (!_listenerCancellationToken.IsCancellationRequested)
             {
                 try
                 {
+                    if (KeepAlive)
+                    {
+                        if (!IsClientConnected())
+                        {
+                            _listenerCancellationToken.Cancel();
+                            // Attempt to reconnect
+                            Task.Run(async () => await ReconnectAsync());
+                            return;
+                        }
+                    }
+
+                    
                     _messageProcessingResetEvent.Set();
-                    var readTask = _networkStream.ReadAsync(readBuf, startIndex, readBuf.Length - startIndex, _listenerCancellationToken.Token);
+                    var readTask = _networkStream.ReadAsync(readBuf, 0, readBuf.Length, _listenerCancellationToken.Token);
                     int read = readTask.Result;
 
                     _messageProcessingResetEvent.Reset();
 
-                    // detect ISCP blocks
-                    int endIndex = 0;
-                    for (int i = 0; i < read - 4; i++)
+                    if (read > 0)
                     {
-                        try
+                        messageBuf.AddRange(readBuf.Take(read));
+
+                        // Check if we have a complete message
+                        while (messageBuf.Count >= 16)
                         {
-                            // message start with ISCP
-                            if (readBuf.Skip(i).Take(4).SequenceEqual(ISCPMessage.Magic))
+                            // Check for ISCP magic
+                            if (messageBuf.Take(4).SequenceEqual(ISCPMessage.Magic))
                             {
-                                startIndex = i;
-                                var messageSize = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(readBuf, startIndex + 8));
-                                endIndex = startIndex + 16 + messageSize;
-                                var msgString = Encoding.ASCII.GetString(readBuf, startIndex + 16, messageSize);
-                                i = endIndex - 1;
+                                var messageSize = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(messageBuf.Skip(8).Take(4).ToArray(), 0));
+                                var totalSize = 16 + messageSize;
 
-                                var msg = ISCPMessage.Parse(msgString);
-
-                                if (msg != null)
+                                if (messageBuf.Count >= totalSize)
                                 {
-                                    System.Diagnostics.Trace.WriteLine($"{DateTime.Now:O} Received {msg.ToString()}");
-                                    MessageReceived?.Invoke(this, new ISCPMessageEventArgs() { Message = msg });
+                                    var msgString = Encoding.ASCII.GetString(messageBuf.Skip(16).Take(messageSize).ToArray());
+                                    var msg = ISCPMessage.Parse(msgString);
+
+                                    if (msg != null)
+                                    {
+                                        System.Diagnostics.Trace.WriteLine($"{DateTime.Now:O} Received {msg}");
+                                        MessageReceived?.Invoke(this, new ISCPMessageEventArgs() { Message = msg });
+                                    }
+
+                                    messageBuf.RemoveRange(0, totalSize);
+                                }
+                                else
+                                {
+                                    break; // Wait for more data
                                 }
                             }
-                        }
-                        catch (Exception exp)
-                        {
-                            System.Diagnostics.Trace.Fail("Failed extracting ISCP message", exp.ToString());
-                            // just try next byte
+                            else
+                            {
+                                messageBuf.RemoveAt(0); // Remove invalid data
+                            }
                         }
                     }
-
-                    if (endIndex < read)
-                    {
-                        // still some uncompleted messages in remaining buffer
-                        startIndex = read - endIndex;
-                        readBuf.Skip(endIndex).Take(startIndex).ToArray().CopyTo(readBuf, 0); // copy to start of buf
-                    }
-                    else
-                        startIndex = 0;
                 }
-                catch (AggregateException exp)
+                catch (OperationCanceledException)
                 {
-                    if (!(exp.InnerException is OperationCanceledException))
-                    {
-                        System.Diagnostics.Trace.Fail($"Error reading message.", exp.ToString());
-                    }
+                    // Handle cancellation
+                    //System.Diagnostics.Trace.WriteLine("Message receive operation was canceled.");
                 }
                 catch (Exception exp)
                 {
-                    System.Diagnostics.Trace.Fail($"Error parsing message.", exp.ToString());
+                    //System.Diagnostics.Trace.Fail($"Error parsing message: {exp}");
                 }
+            }
+        }
+
+    private bool IsClientConnected()
+    {
+        try
+        {
+            if (_client != null && _client.Client != null && _client.Client.Connected)
+            {
+                // Detect if client is connected
+                if (_client.Client.Poll(0, SelectMode.SelectRead))
+                {
+                    byte[] buffer = new byte[1];
+                    if (_client.Client.Receive(buffer, SocketFlags.Peek) == 0)
+                    {
+                        return false; // Client disconnected
+                    }
+                }
+                return true; // Client connected
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        return false;
+    }
+
+        private async Task ReconnectAsync()
+        {
+            try
+            {
+                Disconnect();
+                await ConnectAsync(_ipAddress, _port);
+            }
+            catch (Exception ex)
+            {
+                // Handle reconnection exception
+                Console.WriteLine($"Reconnection failed: {ex.Message}");
             }
         }
 
@@ -149,6 +228,11 @@ namespace Onkyo.eISCP
         public async Task<ISCPMessage> SendCommandAsync(string message)
         {
             var m = ISCPMessage.Parse(message);
+            return await SendCommandAsync(m);
+        }
+        public async Task<ISCPMessage> SendCommandAsync(string command,string message)
+        {
+            var m = ISCPMessage.Parse(command+message);
             return await SendCommandAsync(m);
         }
 
@@ -193,7 +277,7 @@ namespace Onkyo.eISCP
             else
             {
                 System.Diagnostics.Trace.WriteLine($"{DateTime.Now:O} Response timeout ({message.Command}, {millisecondsTimeout} ms).");
-                throw new TimeoutException("Response timeout ({message.Command}, {millisecondsTimeout} ms).");
+                throw new TimeoutException($"Response timeout ({message.Command}, {millisecondsTimeout} ms).");
             }
 
             return response;
@@ -258,10 +342,8 @@ namespace Onkyo.eISCP
         /// <summary>
         /// Try to find ISCP devices on network.
         /// </summary>
-        public static Task<List<ReceiverInfo>> DiscoverAsync(int millisecondsTimeout = 5000)
+        public async Task<List<ReceiverInfo>> DiscoverAsync(int millisecondsTimeout = 5000)
         {
-            return Task.Run(() =>
-            {
                 int onkyoPort = 60128;
                 byte[] onkyoMagic = new ISCPMessage("ECNQSTN").GetBytes("!x");
                 var foundReceivers = new List<ReceiverInfo>();
@@ -319,14 +401,13 @@ namespace Onkyo.eISCP
                             {
                                 Port = Int32.Parse(info["iscp_port"].Value),
                                 Model = info["model_name"].Value,
-                                IPAddress = adr
+                                IPAddress = adr, 
                             };
                             foundReceivers.Add(ri);
                         }
                     }
                 }
                 return foundReceivers;
-            });
         }
 
         private static IEnumerable<string> GetInterfaceAddresses()
